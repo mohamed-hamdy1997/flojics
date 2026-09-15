@@ -1,58 +1,85 @@
-<p align="center"><a href="https://laravel.com" target="_blank"><img src="https://raw.githubusercontent.com/laravel/art/master/logo-lockup/5%20SVG/2%20CMYK/1%20Full%20Color/laravel-logolockup-cmyk-red.svg" width="400" alt="Laravel Logo"></a></p>
+# Flojics Technical Assessment — Ticket Escalation Notifications
 
-<p align="center">
-<a href="https://github.com/laravel/framework/actions"><img src="https://github.com/laravel/framework/workflows/tests/badge.svg" alt="Build Status"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/dt/laravel/framework" alt="Total Downloads"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/v/laravel/framework" alt="Latest Stable Version"></a>
-<a href="https://packagist.org/packages/laravel/framework"><img src="https://img.shields.io/packagist/l/laravel/framework" alt="License"></a>
-</p>
+Laravel 13 + Vue 3 + Inertia.js implementation of the ticket escalation feature described in the
+assessment brief: `POST /api/tickets/{id}/escalate` sets a ticket's status to `Escalated`,
+records the escalation date, and delivers notifications through pluggable channels (Email,
+Slack — Strategy pattern, easily extendable) with automatic retries.
 
-## About Laravel
+See `docs/` for the requirement analysis, architecture notes, database design, and test cases.
 
-Laravel is a web application framework with expressive, elegant syntax. We believe development must be an enjoyable and creative experience to be truly fulfilling. Laravel takes the pain out of development by easing common tasks used in many web projects, such as:
+## Requirements
 
-- [Simple, fast routing engine](https://laravel.com/docs/routing).
-- [Powerful dependency injection container](https://laravel.com/docs/container).
-- Multiple back-ends for [session](https://laravel.com/docs/session) and [cache](https://laravel.com/docs/cache) storage.
-- Expressive, intuitive [database ORM](https://laravel.com/docs/eloquent).
-- Database agnostic [schema migrations](https://laravel.com/docs/migrations).
-- [Robust background job processing](https://laravel.com/docs/queues).
-- [Real-time event broadcasting](https://laravel.com/docs/broadcasting).
+- PHP >= 8.3 (developed against 8.4)
+- Composer 2
+- Node.js 20+ / npm
+- MySQL (a running server reachable from `.env`)
 
-Laravel is accessible, powerful, and provides tools required for large, robust applications.
-
-## Learning Laravel
-
-Laravel has the most extensive and thorough [documentation](https://laravel.com/docs) and video tutorial library of all modern web application frameworks, making it a breeze to get started with the framework.
-
-In addition, [Laracasts](https://laracasts.com) contains thousands of video tutorials on a range of topics including Laravel, modern PHP, unit testing, and JavaScript. Boost your skills by digging into our comprehensive video library.
-
-You can also watch bite-sized lessons with real-world projects on [Laravel Learn](https://laravel.com/learn), where you will be guided through building a Laravel application from scratch while learning PHP fundamentals.
-
-## Agentic Development
-
-Laravel's predictable structure and conventions make it ideal for AI coding agents like Claude Code, Cursor, and GitHub Copilot. Install [Laravel Boost](https://laravel.com/docs/ai) to supercharge your AI workflow:
+## Setup
 
 ```bash
-composer require laravel/boost --dev
+composer install
+npm install
 
-php artisan boost:install
+cp .env.example .env
+php artisan key:generate
 ```
 
-Boost provides your agent 15+ tools and skills that help agents build Laravel applications while following best practices.
+Edit `.env` and set your MySQL credentials (`DB_DATABASE`, `DB_USERNAME`, `DB_PASSWORD`). To
+exercise Slack delivery, also set `SLACK_BOT_USER_OAUTH_TOKEN` and
+`SLACK_BOT_USER_DEFAULT_CHANNEL` (a real Slack bot token with `chat:write` scope); without it,
+the Slack channel will fail and retry as designed — which is a fine way to see the retry
+mechanism in action. `ESCALATION_FALLBACK_EMAIL` is used for the Email channel when a ticket has
+no assigned agent. `MAIL_MAILER=log` (the default) writes outgoing emails to
+`storage/logs/laravel.log` instead of sending real mail.
 
-## Contributing
+```bash
+php artisan migrate --seed
+npm run build   # or `npm run dev` for local development with hot reload
+php artisan serve
+```
 
-Thank you for considering contributing to the Laravel framework! The contribution guide can be found in the [Laravel documentation](https://laravel.com/docs/contributions).
+Visit `http://127.0.0.1:8000/tickets` (or wherever `artisan serve` binds) — `/` redirects there.
 
-## Code of Conduct
+### Processing notification retries
 
-In order to ensure that the Laravel community is welcoming to all, please review and abide by the [Code of Conduct](https://laravel.com/docs/contributions#code-of-conduct).
+Notifications are delivered via Laravel's queue (`QUEUE_CONNECTION=database` by default, using
+the built-in `jobs` table). Run a worker so escalations actually get delivered/retried:
 
-## Security Vulnerabilities
+```bash
+php artisan queue:work
+```
 
-If you discover a security vulnerability within Laravel, please send an e-mail to Taylor Otwell via [taylor@laravel.com](mailto:taylor@laravel.com). All security vulnerabilities will be promptly addressed.
+Without a worker running, escalating a ticket still updates its status immediately, but the
+Email/Slack jobs will sit queued (and their retries delayed) until a worker processes them.
 
-## License
+## Running Tests
 
-The Laravel framework is open-sourced software licensed under the [MIT license](https://opensource.org/licenses/MIT).
+```bash
+php artisan test
+```
+
+Tests run against a MySQL database configured in `phpunit.xml`
+(`DB_DATABASE=flojics_testing` — create it once with
+`CREATE DATABASE flojics_testing;`). This project uses MySQL for tests instead of SQLite because
+the assessment's technical requirement is MySQL; `RefreshDatabase` handles schema/state per test.
+
+## What's Implemented
+
+- `POST /api/tickets/{id}/escalate` — escalates a ticket, dispatches notifications, returns the
+  updated ticket. Validates the ticket exists (404), rejects re-escalating an already-escalated
+  ticket (422), and validates an optional `channels` array (422 on unsupported channels).
+- **Strategy + Registry pattern** for notification channels (`app/Services/Notifications`) —
+  Email and Slack today, designed so a new channel (WhatsApp, SMS, Teams, Push) is a new class +
+  one config line, no other code changes. See `docs/02-architecture.md`.
+- **Automatic retry** (up to 3 attempts, 10s/30s backoff) via a queued job, with the final
+  result and attempt count persisted per (ticket, channel) in `escalation_notifications`.
+- A minimal **Vue 3 + Inertia.js** page at `/tickets` listing Ticket ID, Subject, Priority,
+  Status, and Escalation Date, with an Escalate button that updates the row in place.
+- 20 PHPUnit tests covering the endpoint, the retry job, and both channel strategies.
+
+## Documentation
+
+- [`docs/01-requirement-analysis.md`](docs/01-requirement-analysis.md) — Questions, Assumptions, Recommendations
+- [`docs/02-architecture.md`](docs/02-architecture.md) — Folder structure, design decisions, notification architecture, retry strategy, extending with new channels
+- [`docs/03-database-design.md`](docs/03-database-design.md) — Tables, relationships, indexes/constraints
+- [`docs/04-test-cases.md`](docs/04-test-cases.md) — Test case matrix and self-testing notes

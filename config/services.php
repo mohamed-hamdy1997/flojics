@@ -35,4 +35,8 @@ return [
         ],
     ],
 
+    'escalation' => [
+        'fallback_email' => env('ESCALATION_FALLBACK_EMAIL'),
+    ],
+
 ];
